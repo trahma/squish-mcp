@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "squish": {
+      "type": "remote",
+      "url": "http://localhost:4319/mcp",
+      "enabled": true,
+      "headers": {
+        "x-agent-id": "backend-1",
+        "x-agent-metadata": "{\"role\":\"backend\",\"model\":\"opencode\"}"
+      }
+    }
+  }
+}

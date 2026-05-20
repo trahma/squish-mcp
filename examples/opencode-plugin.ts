@@ -100,14 +100,22 @@ export const SquishPlugin: Plugin = async ({ client }) => {
       if (line.startsWith("event:")) type = line.slice(6).trim();
       else if (line.startsWith("data:")) data += line.slice(5).replace(/^ /, "");
     }
-    if (type !== "message" || !data) return;
-    try {
-      const { from, preview } = JSON.parse(data);
-      trace(`SSE message event from ${from}`);
-      notify(from, preview);
-    } catch (err) {
-      console.warn("[squish] failed to parse SSE data:", err);
+    if (type === "heartbeat") {
+      trace("heartbeat (stream is live)"); // arrives every ~25s
+      return;
     }
+    if (type !== "message" || !data) return;
+    let payload: { from?: string; preview?: string };
+    try {
+      payload = JSON.parse(data);
+    } catch (err) {
+      console.warn("[squish] failed to parse SSE data:", err, data);
+      return;
+    }
+    // Unconditional (not trace): a delivered message is the key signal we want
+    // visible even without SQUISH_DEBUG.
+    log(`message received from ${payload.from}`);
+    notify(payload.from ?? "unknown", payload.preview ?? "");
   };
 
   void (async () => {

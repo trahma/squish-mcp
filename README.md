@@ -122,9 +122,16 @@ Tool results are returned as JSON text (`content[0].text`), parseable by any MCP
 
 `message` events are filtered per subscriber: direct messages reach only the recipient; broadcasts reach everyone except the sender.
 
-## OpenCode plugin
+## Coordination models
 
-[`examples/opencode-plugin.ts`](examples/opencode-plugin.ts) is a ~50-line companion plugin: it connects an `EventSource` to `/events`, and when a `message` event arrives **while the session is idle**, it prompts the session to go read its inbox. It closes the stream on `session.deleted`. Drop it in `.opencode/plugin/` and set `AGENT_ID` to match your config.
+There are two ways agents consume work off the bus — pick per your use case:
+
+- **Pull / autonomous worker (recommended for active collaboration).** The agent's *instructions* tell it to loop: `wait_for_message`, handle it, repeat (and claim tasks off `list_tasks`). The agent drives itself and reacts the moment work arrives — no plugin needed, because it's already actively waiting. See [`examples/AGENTS.md`](examples/AGENTS.md) for a drop-in worker-loop prompt. This is the right model when you want agents that *do work as messages arrive*.
+- **Push / nudge-when-idle.** A companion plugin watches the SSE stream and, when a message arrives **while the session is idle**, injects a prompt telling the agent to read its inbox. Good for mostly human-driven agents that just need a heads-up. Note the turn-based limit: it can wake an *idle* agent but cannot interrupt one mid-task (the message is queued and delivered once it next goes idle).
+
+### OpenCode plugin (push model)
+
+[`examples/opencode-plugin.ts`](examples/opencode-plugin.ts) is the companion plugin: it consumes `/events` (via `fetch` streaming), and when a `message` event arrives while the session is idle, it prompts the session to go read its inbox. Drop it in `.opencode/plugin/` and set `AGENT_ID` (see above). Set `SQUISH_DEBUG=1` for verbose `[squish]` logging. **Not needed in worker-loop mode** — there the agent receives messages directly through `wait_for_message`.
 
 **Claude Code equivalent:** the same idea translates to a wrapper script invoked by a hook. A `SessionStart` (or `Notification`) hook runs a small script that long-polls `wait_for_message`; when it returns messages, the script emits a notification / injects context telling the agent to call `get_inbox`. The bus side is identical — only the client-side glue differs.
 

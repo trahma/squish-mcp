@@ -10,6 +10,7 @@
  *                          header in opencode.json. If unset, the plugin warns
  *                          and disables itself (and the bus rejects MCP calls).
  *   SQUISH_URL           - base URL of the bus (default http://localhost:4319)
+ *   SQUISH_DEBUG         - set to "1" for verbose [squish] logging
  *
  * The same pattern translates to Claude Code via a wrapper script + a
  * SessionStart/Notification hook that long-polls `wait_for_message` — see README.
@@ -19,6 +20,9 @@ import type { Plugin } from "@opencode-ai/plugin";
 export const SquishPlugin: Plugin = async ({ client }) => {
   const agentId = process.env.AGENT_ID?.trim();
   const base = process.env.SQUISH_URL ?? "http://localhost:4319";
+  const debug = process.env.SQUISH_DEBUG === "1";
+  const log = (...args: unknown[]) => console.log("[squish]", ...args);
+  const trace = (...args: unknown[]) => debug && log(...args);
 
   if (!agentId) {
     // Loud, actionable warning rather than silently doing nothing — a missing
@@ -43,29 +47,76 @@ export const SquishPlugin: Plugin = async ({ client }) => {
 
   let sessionID: string | undefined;
   let idle = true;
-  const source = new EventSource(`${base}/events?agent_id=${agentId}`);
+  let pending: { from: string; preview: string } | undefined;
+
+  const url = `${base}/events?agent_id=${encodeURIComponent(agentId)}`;
+  const source = new EventSource(url);
+  source.onopen = () => log(`connected to bus as "${agentId}" (${url})`);
+  source.onerror = (err) =>
+    console.warn(
+      `[squish] SSE connection error for "${agentId}" at ${url} — is the bus running?`,
+      err,
+    );
+
+  /** Prompt the (idle) session to go read its inbox. */
+  const notify = (from: string, preview: string) => {
+    if (!sessionID) {
+      // We only learn sessionID from session events; until one fires we can't
+      // target a prompt. Stash the latest and flush once we know the session.
+      pending = { from, preview };
+      trace(`message from ${from} queued (no sessionID yet)`);
+      return;
+    }
+    if (!idle) {
+      pending = { from, preview };
+      trace(`message from ${from} queued (session busy)`);
+      return;
+    }
+    pending = undefined;
+    trace(`prompting session ${sessionID} about message from ${from}`);
+    // NOTE: OpenCode's SDK uses { path, body } — NOT { sessionID, parts }.
+    void client.session
+      .prompt({
+        path: { id: sessionID },
+        body: {
+          parts: [
+            {
+              type: "text",
+              text: `📬 New message from ${from}: ${preview}\n\nUse get_inbox to retrieve the full message and reply if needed.`,
+            },
+          ],
+        },
+      })
+      .catch((err) => console.warn("[squish] session.prompt failed:", err));
+  };
 
   source.addEventListener("message", (e: MessageEvent) => {
-    if (!sessionID || !idle) return; // only interrupt an idle session
-    const { from, preview } = JSON.parse(e.data);
-    void client.session.prompt({
-      sessionID,
-      parts: [
-        {
-          type: "text",
-          text: `📬 New message from ${from}: ${preview}\n\nUse get_inbox to retrieve the full message.`,
-        },
-      ],
-    });
+    try {
+      const { from, preview } = JSON.parse(e.data);
+      trace(`SSE message event from ${from}`);
+      notify(from, preview);
+    } catch (err) {
+      console.warn("[squish] failed to parse SSE message event:", err);
+    }
   });
 
   return {
     event: async ({ event }) => {
-      // Track the active session and its idle state to gate interruptions.
+      // Property names vary by OpenCode version; read defensively.
+      const props = (event as { properties?: Record<string, unknown> })
+        .properties;
+      const sid = (props?.sessionID ?? props?.session_id) as string | undefined;
+
       if (event.type === "session.idle") {
-        sessionID = event.properties.sessionID;
+        if (sid) sessionID = sid;
         idle = true;
-      } else if (event.type === "message.updated") {
+        // A message may have arrived mid-turn or before we knew the session.
+        if (pending) notify(pending.from, pending.preview);
+      } else if (
+        event.type === "message.updated" ||
+        event.type === "message.part.updated"
+      ) {
+        if (sid) sessionID = sid;
         idle = false; // a turn is in progress; hold notifications
       } else if (event.type === "session.deleted") {
         source.close();

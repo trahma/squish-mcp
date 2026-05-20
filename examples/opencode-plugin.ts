@@ -150,10 +150,30 @@ export const SquishPlugin: Plugin = async ({ client }) => {
 
   return {
     event: async ({ event }) => {
-      // Property names vary by OpenCode version; read defensively.
-      const props = (event as { properties?: Record<string, unknown> })
-        .properties;
-      const sid = (props?.sessionID ?? props?.session_id) as string | undefined;
+      // Property names/locations vary by OpenCode version, so search a few
+      // likely spots and (under SQUISH_DEBUG) dump the shape when we miss.
+      const ev = event as {
+        type: string;
+        properties?: Record<string, any>;
+        sessionID?: string;
+        session_id?: string;
+      };
+      const p = ev.properties;
+      const sid =
+        p?.sessionID ??
+        p?.session_id ??
+        p?.info?.sessionID ??
+        p?.info?.id ??
+        ev.sessionID ??
+        ev.session_id;
+
+      trace(`event ${ev.type}${sid ? ` (session ${sid})` : ""}`);
+      if (
+        !sid &&
+        (ev.type.startsWith("session.") || ev.type.startsWith("message."))
+      ) {
+        trace(`  ↳ no session id found; properties=${JSON.stringify(p)}`);
+      }
 
       if (event.type === "session.idle") {
         if (sid) sessionID = sid;

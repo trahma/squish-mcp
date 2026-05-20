@@ -24,6 +24,10 @@ export const SquishPlugin: Plugin = async ({ client }) => {
   const log = (...args: unknown[]) => console.log("[squish]", ...args);
   const trace = (...args: unknown[]) => debug && log(...args);
 
+  // Unconditional load marker: if you never see this line, the plugin file
+  // itself isn't being loaded (wrong location, wrong export, or a parse error).
+  log(`plugin loaded (AGENT_ID=${agentId ?? "unset"})`);
+
   if (!agentId) {
     // Loud, actionable warning rather than silently doing nothing — a missing
     // AGENT_ID is the #1 setup mistake, and it also breaks the MCP server

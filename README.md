@@ -49,7 +49,7 @@ Give each agent a distinct ID (`backend-1`, `frontend-1`, `reviewer`, …).
 
 ### OpenCode
 
-`opencode.json` (see [`examples/opencode.json`](examples/opencode.json)):
+`opencode.json` (see [`examples/opencode.json`](examples/opencode.json)) — reference the identity from the environment so one config serves every agent:
 
 ```json
 {
@@ -58,11 +58,34 @@ Give each agent a distinct ID (`backend-1`, `frontend-1`, `reviewer`, …).
       "type": "remote",
       "url": "http://localhost:4319/mcp",
       "enabled": true,
-      "headers": { "x-agent-id": "backend-1" }
+      "headers": {
+        "x-agent-id": "{env:AGENT_ID}",
+        "x-agent-metadata": "{env:AGENT_METADATA}"
+      }
     }
   }
 }
 ```
+
+`{env:VAR}` is substituted from OpenCode's process environment (not from a `.env` file — those aren't auto-loaded). `x-agent-metadata` is optional JSON returned by `whoami`/`list_agents` (e.g. role); leave `AGENT_METADATA` unset to omit it.
+
+### Setting `AGENT_ID`
+
+`AGENT_ID` identifies the agent and must be **unique per running instance** — it is read in two places that must agree: the `x-agent-id` MCP header (above) and the companion plugin's SSE connection. Set it in the environment that launches OpenCode; do **not** commit a shared `.env` (it can only hold one id, and OpenCode/Node don't auto-load `.env` anyway). Pick whichever fits your workflow:
+
+```bash
+# 1. Inline at launch (simplest — one agent per terminal)
+AGENT_ID=backend-1 opencode
+AGENT_ID=frontend-1 AGENT_METADATA='{"role":"frontend"}' opencode
+
+# 2. Per-role shell alias
+alias oc-backend='AGENT_ID=backend-1 opencode'
+
+# 3. direnv per worktree — gitignored .envrc, auto-exported into the shell:
+#    echo 'export AGENT_ID=backend-1' > .envrc && direnv allow
+```
+
+If `AGENT_ID` is unset, the bus rejects every MCP call with `401`, and the plugin prints a warning and disables itself.
 
 ## Tools
 

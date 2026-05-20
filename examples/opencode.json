@@ -6,8 +6,8 @@
       "url": "http://localhost:4319/mcp",
       "enabled": true,
       "headers": {
-        "x-agent-id": "backend-1",
-        "x-agent-metadata": "{\"role\":\"backend\",\"model\":\"opencode\"}"
+        "x-agent-id": "{env:AGENT_ID}",
+        "x-agent-metadata": "{env:AGENT_METADATA}"
       }
     }
   }

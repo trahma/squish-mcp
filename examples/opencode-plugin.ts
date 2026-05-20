@@ -6,8 +6,10 @@
  * to go read its inbox. Drop this in `.opencode/plugin/squish.ts`.
  *
  * Env:
- *   AGENT_ID        - this agent's bus identity (must match opencode.json header)
- *   SQUISH_URL      - base URL of the bus (default http://localhost:4319)
+ *   AGENT_ID  (required) - this agent's bus identity; must match the x-agent-id
+ *                          header in opencode.json. If unset, the plugin warns
+ *                          and disables itself (and the bus rejects MCP calls).
+ *   SQUISH_URL           - base URL of the bus (default http://localhost:4319)
  *
  * The same pattern translates to Claude Code via a wrapper script + a
  * SessionStart/Notification hook that long-polls `wait_for_message` — see README.
@@ -15,9 +17,29 @@
 import type { Plugin } from "@opencode-ai/plugin";
 
 export const SquishPlugin: Plugin = async ({ client }) => {
-  const agentId = process.env.AGENT_ID;
+  const agentId = process.env.AGENT_ID?.trim();
   const base = process.env.SQUISH_URL ?? "http://localhost:4319";
-  if (!agentId) return {}; // not configured for this agent; do nothing
+
+  if (!agentId) {
+    // Loud, actionable warning rather than silently doing nothing — a missing
+    // AGENT_ID is the #1 setup mistake, and it also breaks the MCP server
+    // itself (the bus rejects requests without an x-agent-id header).
+    console.warn(
+      [
+        "",
+        "⚠️  squish-mcp: AGENT_ID is not set.",
+        "    This agent will NOT coordinate via squish:",
+        "      • no message notifications (SSE bridge disabled), and",
+        "      • the MCP server will reject every tool call (missing x-agent-id header).",
+        "",
+        "    Fix: export a unique AGENT_ID into the environment that launched OpenCode,",
+        "    e.g.  AGENT_ID=backend-1 opencode   (or set it via direnv / a launcher).",
+        "    It must match the x-agent-id header in your opencode.json MCP config.",
+        "",
+      ].join("\n"),
+    );
+    return {}; // nothing to wire up without an identity
+  }
 
   let sessionID: string | undefined;
   let idle = true;

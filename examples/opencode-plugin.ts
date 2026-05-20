@@ -53,15 +53,6 @@ export const SquishPlugin: Plugin = async ({ client }) => {
   let idle = true;
   let pending: { from: string; preview: string } | undefined;
 
-  const url = `${base}/events?agent_id=${encodeURIComponent(agentId)}`;
-  const source = new EventSource(url);
-  source.onopen = () => log(`connected to bus as "${agentId}" (${url})`);
-  source.onerror = (err) =>
-    console.warn(
-      `[squish] SSE connection error for "${agentId}" at ${url} — is the bus running?`,
-      err,
-    );
-
   /** Prompt the (idle) session to go read its inbox. */
   const notify = (from: string, preview: string) => {
     if (!sessionID) {
@@ -94,15 +85,68 @@ export const SquishPlugin: Plugin = async ({ client }) => {
       .catch((err) => console.warn("[squish] session.prompt failed:", err));
   };
 
-  source.addEventListener("message", (e: MessageEvent) => {
+  // Consume the SSE stream with fetch rather than EventSource: EventSource is
+  // not a reliable global in every OpenCode/Bun runtime (a missing global would
+  // throw here and silently kill the plugin). fetch + a ReadableStream reader
+  // works everywhere and surfaces HTTP status / connection errors. Reconnects
+  // with a short backoff until the session is deleted.
+  const url = `${base}/events?agent_id=${encodeURIComponent(agentId)}`;
+  const abort = new AbortController();
+
+  const handleFrame = (frame: string) => {
+    let type = "message";
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) type = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).replace(/^ /, "");
+    }
+    if (type !== "message" || !data) return;
     try {
-      const { from, preview } = JSON.parse(e.data);
+      const { from, preview } = JSON.parse(data);
       trace(`SSE message event from ${from}`);
       notify(from, preview);
     } catch (err) {
-      console.warn("[squish] failed to parse SSE message event:", err);
+      console.warn("[squish] failed to parse SSE data:", err);
     }
-  });
+  };
+
+  void (async () => {
+    while (!abort.signal.aborted) {
+      try {
+        const res = await fetch(url, {
+          headers: { accept: "text/event-stream" },
+          signal: abort.signal,
+        });
+        if (!res.ok || !res.body) {
+          console.warn(`[squish] SSE got HTTP ${res.status} from ${url}`);
+        } else {
+          log(`connected to bus as "${agentId}" (${url})`);
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let i: number;
+            while ((i = buffer.indexOf("\n\n")) !== -1) {
+              handleFrame(buffer.slice(0, i));
+              buffer = buffer.slice(i + 2);
+            }
+          }
+        }
+      } catch (err) {
+        if (!abort.signal.aborted)
+          console.warn(
+            `[squish] SSE connection error at ${url} — is the bus running?`,
+            err,
+          );
+      }
+      if (abort.signal.aborted) break;
+      await new Promise((r) => setTimeout(r, 3000)); // backoff, then reconnect
+    }
+    trace("SSE loop stopped");
+  })();
 
   return {
     event: async ({ event }) => {
@@ -123,7 +167,7 @@ export const SquishPlugin: Plugin = async ({ client }) => {
         if (sid) sessionID = sid;
         idle = false; // a turn is in progress; hold notifications
       } else if (event.type === "session.deleted") {
-        source.close();
+        abort.abort();
       }
     },
   };

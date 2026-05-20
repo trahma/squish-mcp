@@ -40,8 +40,13 @@ These are load-bearing decisions — **flag before deviating**:
   the header are rejected (401); a session whose header later changes is
   rejected (403).
 - **SQLite + WAL.** `openDb()` sets `journal_mode=WAL`, `synchronous=NORMAL`.
-  `better-sqlite3` is **synchronous** — no `await` on DB calls. This is also why
-  the concurrency guarantees work: writes serialize naturally.
+  Persistence uses Node's built-in **`node:sqlite`** (`DatabaseSync`) — no native
+  addon, no compile step. It's **synchronous** — no `await` on DB calls. This is
+  also why the concurrency guarantees work: writes serialize naturally. We
+  acquire it via `process.getBuiltinModule("node:sqlite")` in `db.ts` (not a
+  static import) so bundlers/test runners don't choke on the `node:`-only
+  specifier. Transactions use the `inTransaction(db, fn)` helper in `db.ts`
+  (node:sqlite has no `.transaction()` like better-sqlite3 did).
 - **Race-safety lives in SQL, not JS.** `claim_task` is a single guarded
   `UPDATE ... WHERE status='pending' AND <deps completed>` and checks
   `changes()`. Don't replace it with read-then-write logic.
@@ -83,12 +88,18 @@ These are load-bearing decisions — **flag before deviating**:
 
 ## Gotchas
 
-- Don't `await` `better-sqlite3` calls — they're synchronous.
+- Don't `await` `node:sqlite` calls — `DatabaseSync` is synchronous.
+- `.get()`/`.all()` return `Record<string, SQLOutputValue>`; cast row results
+  with `as unknown as SomeRow` (a direct `as SomeRow` won't compile).
+- `changes`/`lastInsertRowid` are typed `number | bigint` — wrap in `Number()`
+  when summing or comparing.
 - `:memory:` DBs can't exercise WAL; the WAL assertion is via the real-file path.
+- Don't add a static `import ... from "node:sqlite"` — use the existing
+  `process.getBuiltinModule` handle in `db.ts`, or vite-node will fail to resolve it.
 - New SSE event types must be added to `BusEvent` (`events.ts`), the
   `eventPayload` switch (`index.ts`), and `isRelevantTo` if they need targeting.
 - Env vars: `AGENT_BUS_DB_PATH`, `PORT`, `HOST`, `LOG_LEVEL`.
 - Scope guardrails (don't build without asking): auth beyond `x-agent-id`, TLS,
   multi-host/clustering, first-class threading (use `metadata.in_reply_to`), a UI.
 - Ask before adding any runtime dependency. Current set: `@modelcontextprotocol/sdk`,
-  `better-sqlite3`, `zod`, `pino`.
+  `zod`, `pino` (SQLite is built into Node — no dependency).

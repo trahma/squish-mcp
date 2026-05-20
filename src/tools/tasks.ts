@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BusContext } from "../context.js";
+import { inTransaction } from "../db.js";
 import { preview } from "../events.js";
 import { ulid } from "../ulid.js";
 import { parseJson, rowToTask, type TaskRow } from "../types.js";
@@ -95,7 +96,7 @@ export function registerTaskTools(
     },
     ({ status, assignee, include_completed }) => {
       const clauses: string[] = [];
-      const params: Record<string, unknown> = {};
+      const params: Record<string, string> = {};
       if (status) {
         clauses.push("status = @status");
         params.status = status;
@@ -109,7 +110,7 @@ export function registerTaskTools(
       const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
       const rows = ctx.db
         .prepare(`SELECT * FROM tasks ${where} ORDER BY updated_at DESC`)
-        .all(params) as TaskRow[];
+        .all(params) as unknown as TaskRow[];
       return jsonResult({ tasks: rows.map(rowToTask) });
     },
   );
@@ -147,7 +148,7 @@ export function registerTaskTools(
         .run({ id: task_id, agent: agentId, now });
 
       if (info.changes === 1) {
-        const task = rowToTask(getTask.get(task_id) as TaskRow);
+        const task = rowToTask(getTask.get(task_id) as unknown as TaskRow);
         ctx.events.publish({
           type: "task_claimed",
           task_id,
@@ -187,7 +188,7 @@ export function registerTaskTools(
       },
     },
     ({ task_id, status, notes, result }) => {
-      const update = ctx.db.transaction(() => {
+      const outcome = inTransaction(ctx.db, () => {
         const row = getTask.get(task_id) as TaskRow | undefined;
         if (!row) return { updated: false, reason: "not_found" as const };
         if (row.assignee !== agentId)
@@ -215,11 +216,9 @@ export function registerTaskTools(
 
         return {
           updated: true as const,
-          task: rowToTask(getTask.get(task_id) as TaskRow),
+          task: rowToTask(getTask.get(task_id) as unknown as TaskRow),
         };
       });
-
-      const outcome = update();
       if (outcome.updated && outcome.task && status === "completed") {
         ctx.events.publish({
           type: "task_completed",

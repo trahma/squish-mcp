@@ -1,5 +1,11 @@
-import Database from "better-sqlite3";
 import { logger } from "./logger.js";
+
+// Obtain node:sqlite via getBuiltinModule rather than a static `import`.
+// `node:sqlite` is exposed only under the `node:` prefix (no bare alias), which
+// trips up bundlers/test runners (Vite/vite-node strip the prefix and fail to
+// resolve "sqlite"). getBuiltinModule is a plain runtime call, so nothing tries
+// to resolve it at transform time, while staying fully typed.
+const { DatabaseSync } = process.getBuiltinModule("node:sqlite");
 
 /**
  * The full schema. Idempotent (IF NOT EXISTS) so it doubles as the migration:
@@ -49,7 +55,8 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, updated_at);
 `;
 
-export type DB = Database.Database;
+/** We use Node's built-in SQLite (node:sqlite) — no native addon to compile. */
+export type DB = InstanceType<typeof DatabaseSync>;
 
 export interface OpenDbOptions {
   /** Path to the SQLite file. ":memory:" for ephemeral DBs (tests). */
@@ -60,32 +67,52 @@ export interface OpenDbOptions {
 
 /**
  * Open (or create) the SQLite database, enable WAL, and run migrations.
- * Returns the raw better-sqlite3 handle; statement preparation lives with the
- * tools that use them so SQL stays near its caller.
+ * Returns the database handle; statement preparation lives with the tools that
+ * use them so SQL stays near its caller.
  */
 export function openDb(options: OpenDbOptions = {}): DB {
   const path =
     options.path ?? process.env.AGENT_BUS_DB_PATH ?? "./agent-bus.db";
 
-  const db = new Database(path);
+  const db = new DatabaseSync(path);
 
   // WAL: concurrent readers + a single serialized writer, no extra infra.
   // synchronous=NORMAL is the recommended durability tradeoff under WAL.
-  const journalMode = db.pragma("journal_mode = WAL", { simple: true });
-  db.pragma("synchronous = NORMAL");
-  db.pragma("foreign_keys = ON");
-  // Wait up to 5s for a write lock instead of throwing SQLITE_BUSY immediately.
-  db.pragma("busy_timeout = 5000");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
+  db.exec("PRAGMA foreign_keys = ON");
+  // Wait up to 5s for a write lock instead of failing immediately.
+  db.exec("PRAGMA busy_timeout = 5000");
 
   db.exec(SCHEMA);
 
   if (!options.quiet) {
+    const { journal_mode } = db.prepare("PRAGMA journal_mode").get() as {
+      journal_mode: string;
+    };
     logger.info(
-      { path, journal_mode: journalMode },
+      { path, journal_mode },
       "sqlite ready (WAL %s)",
-      journalMode === "wal" ? "enabled" : `MODE=${String(journalMode)}`,
+      journal_mode === "wal" ? "enabled" : `MODE=${journal_mode}`,
     );
   }
 
   return db;
+}
+
+/**
+ * Run `fn` inside a transaction, committing on success and rolling back on
+ * error. node:sqlite has no transaction() helper (unlike better-sqlite3), so we
+ * wrap BEGIN/COMMIT ourselves. Statements run synchronously, so this is safe.
+ */
+export function inTransaction<T>(db: DB, fn: () => T): T {
+  db.exec("BEGIN");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
 }

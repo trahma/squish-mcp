@@ -57,7 +57,7 @@ export function registerAgentTools(
         .prepare(
           "SELECT * FROM agents WHERE last_seen >= ? ORDER BY last_seen DESC",
         )
-        .all(cutoff) as AgentRow[];
+        .all(cutoff) as unknown as AgentRow[];
       return jsonResult({
         agents: rows.map((r) => ({
           id: r.id,

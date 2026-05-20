@@ -8,12 +8,14 @@ This replaces the brittle "agents write JSON files to a shared folder" pattern w
 
 - **One shared process, HTTP transport.** All agents connect over Streamable HTTP to the same process so they share one DB and one event stream — not stdio-per-agent.
 - **Identity is fixed per connection.** Each agent sets `x-agent-id` in its MCP server config. The server reads it from a header on every request. **Requests with no identity are rejected.** Agents can't claim another identity per-call — the sender of every message and the claimer of every task is the header value, never a tool argument.
-- **SQLite with WAL.** `journal_mode=WAL`, `synchronous=NORMAL` — concurrent reads + serialized writes, no extra infrastructure. WAL status is logged at startup.
+- **SQLite with WAL.** `journal_mode=WAL`, `synchronous=NORMAL` — concurrent reads + serialized writes, no extra infrastructure. WAL status is logged at startup. Uses Node's built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html), so there's **no native addon to compile** — install just works on any platform (requires **Node 24+**).
 - **Long-poll, not WebSocket.** `wait_for_message` blocks (up to a timeout) and resolves the moment a message arrives, via an in-memory emitter keyed by agent ID.
 - **SSE for plugins.** `GET /events?agent_id=X` streams events to non-MCP clients (the OpenCode plugin, watchers, dashboards) off the same emitter.
 - All timestamps are unix epoch **milliseconds** (integers).
 
 ## Quick start
+
+Requires **Node 24+** (for the built-in `node:sqlite` module).
 
 ```bash
 npm install

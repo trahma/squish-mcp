@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BusContext } from "../context.js";
+import { inTransaction } from "../db.js";
 import { preview } from "../events.js";
 import {
   rowToMessage,
@@ -48,7 +49,7 @@ export function queryInbox(
       since,
       unread_only: unreadOnly ? 1 : 0,
       limit: limit ?? 200,
-    }) as Array<MessageRow & { effective_read_at: number | null }>;
+    }) as unknown as Array<MessageRow & { effective_read_at: number | null }>;
 
   return rows.map((row) =>
     rowToMessage({ ...row, read_at: row.effective_read_at }),
@@ -231,16 +232,16 @@ export function registerMessageTools(
           WHERE id = @id AND to_agent IS NULL AND from_agent != @agent`,
       );
 
-      const markAll = ctx.db.transaction((ids: number[]) => {
-        let marked = 0;
-        for (const id of ids) {
-          marked += markDirect.run({ id, agent: agentId, now }).changes;
-          marked += markBroadcast.run({ id, agent: agentId, now }).changes;
+      const marked = inTransaction(ctx.db, () => {
+        let count = 0;
+        for (const id of message_ids) {
+          count += Number(markDirect.run({ id, agent: agentId, now }).changes);
+          count += Number(markBroadcast.run({ id, agent: agentId, now }).changes);
         }
-        return marked;
+        return count;
       });
 
-      return jsonResult({ marked: markAll(message_ids) });
+      return jsonResult({ marked });
     },
   );
 

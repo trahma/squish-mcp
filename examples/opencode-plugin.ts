@@ -50,10 +50,18 @@ export const SquishPlugin: Plugin = async ({ client }) => {
   }
 
   let sessionID: string | undefined;
-  let idle = true;
+  let lastActivityAt = 0; // ms timestamp of the last in-turn event
   let pending: { from: string; preview: string } | undefined;
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
 
-  /** Prompt the (idle) session to go read its inbox. */
+  // Treat the session as idle if no turn activity has happened recently. Using
+  // a timestamp (not a boolean) is robust against OpenCode firing trailing
+  // delta events *after* session.idle, which would otherwise wedge a boolean
+  // flag in the "busy" state with no further session.idle to clear it.
+  const BUSY_WINDOW_MS = 1500;
+  const isIdle = () => Date.now() - lastActivityAt > BUSY_WINDOW_MS;
+
+  /** Prompt the (idle) session to go read its inbox; queue + retry if busy. */
   const notify = (from: string, preview: string) => {
     if (!sessionID) {
       // We only learn sessionID from session events; until one fires we can't
@@ -62,13 +70,19 @@ export const SquishPlugin: Plugin = async ({ client }) => {
       trace(`message from ${from} queued (no sessionID yet)`);
       return;
     }
-    if (!idle) {
+    if (!isIdle()) {
       pending = { from, preview };
       trace(`message from ${from} queued (session busy)`);
+      // Don't rely on a future session.idle to flush — retry after the window.
+      clearTimeout(flushTimer);
+      flushTimer = setTimeout(() => {
+        if (pending) notify(pending.from, pending.preview);
+      }, BUSY_WINDOW_MS + 250);
       return;
     }
     pending = undefined;
-    trace(`prompting session ${sessionID} about message from ${from}`);
+    clearTimeout(flushTimer);
+    log(`prompting session ${sessionID} about message from ${from}`);
     // NOTE: OpenCode's SDK uses { path, body } — NOT { sessionID, parts }.
     void client.session
       .prompt({
@@ -183,19 +197,20 @@ export const SquishPlugin: Plugin = async ({ client }) => {
         trace(`  ↳ no session id found; properties=${JSON.stringify(p)}`);
       }
 
+      if (sid) sessionID = sid;
+
       if (event.type === "session.idle") {
-        if (sid) sessionID = sid;
-        idle = true;
+        lastActivityAt = 0; // turn finished → immediately considered idle
         // A message may have arrived mid-turn or before we knew the session.
         if (pending) notify(pending.from, pending.preview);
       } else if (
         event.type === "message.updated" ||
         event.type === "message.part.updated"
       ) {
-        if (sid) sessionID = sid;
-        idle = false; // a turn is in progress; hold notifications
+        lastActivityAt = Date.now(); // a turn is in progress; hold notifications
       } else if (event.type === "session.deleted") {
         abort.abort();
+        clearTimeout(flushTimer);
       }
     },
   };
